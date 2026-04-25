@@ -8,12 +8,15 @@ For judges:
 
 import re
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi import HTTPException
 
 from app.api import SpaceWeatherApi
+from app.briefing import BriefingContext, CivilianBriefingService
 from app.core.scheduler import start_scheduler, stop_scheduler, warm_scheduler
 from app.core.subscribers import (
     create_or_update_subscriber,
@@ -26,6 +29,7 @@ from app.model import ModelPredictionRequest, SolarStormModelWrapper
 
 space_weather_api = SpaceWeatherApi()
 solar_storm_model = SolarStormModelWrapper()
+civilian_briefing_service = CivilianBriefingService()
 
 
 class AlertSubscriptionRequest(BaseModel):
@@ -47,6 +51,13 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -61,6 +72,11 @@ async def read_space_weather() -> dict:
 
 @app.get("/api/health")
 async def read_health() -> dict:
+    return await space_weather_api.build_health()
+
+
+@app.get("/health")
+async def read_health_alias() -> dict:
     return await space_weather_api.build_health()
 
 
@@ -82,6 +98,33 @@ async def read_visibility(lat: float, lon: float) -> dict:
 @app.get("/api/infrastructure")
 async def read_infrastructure() -> dict:
     return await space_weather_api.build_infrastructure()
+
+
+@app.get("/api/civilian-brief")
+async def read_civilian_brief(latitude: float = 45.0, longitude: float = -74.0, analysis_date: str | None = None) -> dict:
+    status = await space_weather_api.build_status()
+    visibility = await space_weather_api.build_visibility(lat=latitude, lon=longitude)
+    aurora = await space_weather_api.build_aurora()
+    infrastructure = await space_weather_api.build_infrastructure()
+    today_iso = datetime.now(UTC).date().isoformat()
+    if analysis_date and analysis_date != today_iso:
+        model = solar_storm_model.predict(ModelPredictionRequest(date=analysis_date, latitude=latitude))
+    else:
+        model = await solar_storm_model.predict_current(latitude=latitude)
+
+    brief = await civilian_briefing_service.build(
+        BriefingContext(
+            analysis_date=analysis_date or "live",
+            latitude=latitude,
+            model_prediction=model.prediction,
+            model_confidence=model.confidence,
+            status=status,
+            visibility=visibility,
+            aurora=aurora,
+            infrastructure=infrastructure,
+        )
+    )
+    return brief.model_dump()
 
 
 @app.post("/api/alerts/subscribe")

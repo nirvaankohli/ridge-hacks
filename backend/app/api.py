@@ -277,9 +277,9 @@ class NoaaClient(BaseApiClient):
         scale = g_block.get("Scale") or g_block.get("scale")
         return ScaleSnapshot(g_scale=str(scale) if scale is not None else None, raw=data)
 
-    async def get_alerts(self) -> list[str]:
+    async def get_alerts(self) -> list[dict[str, Any]]:
         data = await self.fetch_alerts()
-        return [str(item) for item in data if item]
+        return [_normalize_noaa_alert(item) for item in data if item]
 
     async def get_aurora_snapshot(self) -> AuroraSnapshot:
         data = await self.fetch_aurora()
@@ -348,6 +348,7 @@ class SpaceWeatherApi:
             },
             "scales": {"g_scale": realtime.get("g_scale"), "raw": realtime.get("scales_raw", {})},
             "alerts": realtime.get("alerts", []),
+            "primary_alert": _select_primary_alert(realtime.get("alerts", [])),
             "aurora": {
                 "forecast_time": aurora.get("forecast_time"),
                 "point_count": len(aurora.get("coordinates", [])),
@@ -379,18 +380,28 @@ class SpaceWeatherApi:
         realtime = snapshot.get("realtime", {})
         donki = snapshot.get("donki", {})
         cme_impact = (donki.get("next_cme_impact") or {}).get("estimated_shock_arrival_time")
+        effective_kp = _resolve_effective_kp(snapshot)
+        effective_bz = _safe_float(realtime.get("bz")) or 0.0
+        effective_bt = _safe_float(realtime.get("bt")) or 0.0
+        effective_wind_speed = _safe_float(realtime.get("wind_speed")) or 0.0
+        effective_g_scale = realtime.get("g_scale") or _derive_g_scale_from_kp(effective_kp)
 
+        severity = _get_storm_severity(effective_kp, effective_bz)
+        primary_alert = _select_primary_alert(realtime.get("alerts", []))
         return {
-            "kp": realtime.get("kp"),
+            "kp": effective_kp,
             "kp_source": realtime.get("kp_source", "NOAA 1-minute Kp"),
-            "bz": realtime.get("bz"),
-            "bt": realtime.get("bt"),
-            "wind_speed": realtime.get("wind_speed"),
-            "g_scale": realtime.get("g_scale"),
-            "storm_severity": _get_storm_severity(realtime.get("kp"), realtime.get("bz")),
+            "bz": effective_bz,
+            "bt": effective_bt,
+            "wind_speed": effective_wind_speed,
+            "g_scale": effective_g_scale,
+            "storm_severity": severity,
             "alerts": realtime.get("alerts", []),
+            "primary_alert": primary_alert,
             "cme_impact": cme_impact,
             "cme_countdown_seconds": _countdown_seconds(cme_impact),
+            "summary": primary_alert.get("summary") if primary_alert else _build_status_summary(severity, effective_wind_speed, effective_bz),
+            "countdown_copy": _build_countdown_copy(cme_impact),
             "last_updated": snapshot.get("last_updated"),
             "stale": _is_stale(snapshot.get("source_timestamps", {}).get("realtime"), 10),
             "source_errors": snapshot.get("source_errors", {}),
@@ -398,9 +409,8 @@ class SpaceWeatherApi:
 
     async def build_aurora(self) -> dict[str, Any]:
         snapshot = await self._ensure_snapshot()
-        realtime = snapshot.get("realtime", {})
         aurora = snapshot.get("aurora", {})
-        current_kp = realtime.get("kp") or 0.0
+        current_kp = _resolve_effective_kp(snapshot)
         return {
             "kp": current_kp,
             "viewline_latitude": _get_viewline_latitude(current_kp),
@@ -416,7 +426,7 @@ class SpaceWeatherApi:
 
     async def build_visibility(self, lat: float, lon: float) -> dict[str, Any]:
         snapshot = await self._ensure_snapshot()
-        current_kp = snapshot.get("realtime", {}).get("kp") or 0.0
+        current_kp = _resolve_effective_kp(snapshot)
         kp_required = _get_kp_required_for_latitude(lat)
         probability = _get_visibility_probability(current_kp, lat)
 
@@ -432,6 +442,8 @@ class SpaceWeatherApi:
                 cloud_cover_percent = None
 
         final_probability = adjusted_probability if adjusted_probability is not None else probability
+        look_window = _build_look_window(final_probability)
+        sky_copy = _build_sky_copy(final_probability)
         return {
             "latitude": lat,
             "longitude": lon,
@@ -442,18 +454,23 @@ class SpaceWeatherApi:
             "cloud_cover_percent": cloud_cover_percent,
             "adjusted_probability": adjusted_probability,
             "message": _build_visibility_message(final_probability),
+            "look_window": look_window,
+            "sky_copy": sky_copy,
+            "cloud_cover_label": "N/A" if cloud_cover_percent is None else f"{cloud_cover_percent}%",
         }
 
     async def build_infrastructure(self) -> dict[str, Any]:
         snapshot = await self._ensure_snapshot()
         realtime = snapshot.get("realtime", {})
-        current_kp = realtime.get("kp") or 0.0
+        current_kp = _resolve_effective_kp(snapshot)
+        recommended = _get_storm_severity(current_kp, None)["level"]
         return {
             "current_kp": current_kp,
-            "current_g_scale": realtime.get("g_scale"),
+            "current_g_scale": realtime.get("g_scale") or _derive_g_scale_from_kp(current_kp),
             "region_risks": _get_all_region_risks(current_kp),
             "gps_band_start_lat": max(0.0, _get_viewline_latitude(current_kp) + 5.0),
-            "recommended_warning_level": _get_storm_severity(current_kp, None)["level"],
+            "recommended_warning_level": recommended,
+            "summary": _build_infrastructure_summary(recommended),
             "stale": _is_stale(snapshot.get("source_timestamps", {}).get("realtime"), 10),
             "source_errors": snapshot.get("source_errors", {}),
         }
@@ -619,6 +636,35 @@ def _countdown_seconds(value: str | None) -> int | None:
     return max(0, int((target - datetime.now(UTC)).total_seconds()))
 
 
+def _resolve_effective_kp(snapshot: dict[str, Any]) -> float:
+    realtime = snapshot.get("realtime", {})
+    direct_kp = _safe_float(realtime.get("kp"))
+    if direct_kp is not None:
+        return direct_kp
+
+    recent_gst = snapshot.get("donki", {}).get("recent_gst", [])
+    for item in reversed(recent_gst):
+        kp_index = _safe_float((item or {}).get("kp_index"))
+        if kp_index is not None:
+            return kp_index
+    return 0.0
+
+
+def _derive_g_scale_from_kp(kp: float | None) -> str:
+    value = kp or 0.0
+    if value >= 9:
+        return "G5"
+    if value >= 8:
+        return "G4"
+    if value >= 7:
+        return "G3"
+    if value >= 6:
+        return "G2"
+    if value >= 5:
+        return "G1"
+    return "G0"
+
+
 def _is_stale(value: str | None, max_age_minutes: int) -> bool:
     if not value:
         return True
@@ -720,3 +766,95 @@ def _build_source_freshness(snapshot: dict[str, Any]) -> dict[str, Any]:
         }
         for source, timestamp in source_timestamps.items()
     }
+
+
+def _normalize_noaa_alert(item: Any) -> dict[str, Any]:
+    if isinstance(item, dict):
+        raw_message = str(item.get("message") or "")
+        normalized = {
+            "product_id": item.get("product_id"),
+            "issue_datetime": item.get("issue_datetime"),
+            "raw_message": raw_message,
+        }
+    else:
+        raw_message = str(item or "")
+        normalized = {
+            "product_id": None,
+            "issue_datetime": None,
+            "raw_message": raw_message,
+        }
+
+    parsed = _parse_alert_message(raw_message)
+    return {**normalized, **parsed}
+
+
+def _parse_alert_message(message: str) -> dict[str, Any]:
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    title = next((line for line in lines if "WARNING:" in line or "WATCH:" in line or "ALERT:" in line), "")
+    valid_from = _extract_alert_value(lines, "Valid From:")
+    valid_to = _extract_alert_value(lines, "Valid To:")
+    warning_condition = _extract_alert_value(lines, "Warning Condition:")
+    impact_lines = []
+    for line in lines:
+        if line.startswith("Potential Impacts:"):
+            impact_lines.append(line.replace("Potential Impacts:", "").strip())
+        elif impact_lines and " - " in line:
+            impact_lines.append(line)
+    summary = title or (lines[0] if lines else "Space weather alert")
+    return {
+        "summary": summary,
+        "valid_from": valid_from,
+        "valid_to": valid_to,
+        "warning_condition": warning_condition,
+        "impacts": [line for line in impact_lines if line],
+    }
+
+
+def _extract_alert_value(lines: list[str], prefix: str) -> str | None:
+    for line in lines:
+        if line.startswith(prefix):
+            return line.replace(prefix, "").strip()
+    return None
+
+
+def _select_primary_alert(alerts: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    if not alerts:
+        return None
+    return alerts[0]
+
+
+def _build_status_summary(severity: dict[str, str], wind_speed: float | None, bz: float | None) -> str:
+    return f'{severity.get("label", "Quiet conditions")} with solar wind near {_safe_int(wind_speed) or 0} km/s and Bz at {round(bz or 0.0, 1)} nT.'
+
+
+def _build_countdown_copy(cme_impact: str | None) -> str:
+    if not cme_impact:
+        return "When NASA predicts the next CME impact, the timer appears here."
+    try:
+        return f'Next projected impact at {datetime.fromisoformat(cme_impact.replace("Z", "+00:00")).astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")}.'
+    except ValueError:
+        return "Next projected CME impact timing is available."
+
+
+def _build_look_window(probability: float | None) -> str:
+    value = probability or 0.0
+    if value >= 70:
+        return "Best window: late night into early morning with a clear northern horizon."
+    if value >= 35:
+        return "There is a chance if skies stay clear and you head somewhere dark."
+    return "This storm likely stays north of your sky tonight."
+
+
+def _build_sky_copy(probability: float | None) -> str:
+    value = probability or 0.0
+    if value >= 70:
+        return "Conditions are lined up. Get north-facing dark skies and give it time."
+    if value >= 35:
+        return "Stay flexible. The forecast is watchable, but not a lock."
+    return "Use this as a monitoring night rather than a chase night."
+
+
+def _build_infrastructure_summary(level: str) -> str:
+    if level == "SEVERE":
+        return "At least one region is in a severe operational posture."
+    return "No region is in a severe operational posture right now."

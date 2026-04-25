@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SolarSentinel</title>
+    <link rel="icon" type="image/png" href="./assets/logo.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body data-mode="civilian">
+    <div class="app-shell">
+      <div class="space-noise"></div>
+
+      <header class="topbar">
+        <div class="brand-block">
+          <img class="brand-mark" src="./assets/logo.png" alt="SolarSentinel logo" />
+          <div>
+            <p class="brand-kicker">SolarSentinel</p>
+            <h1>Space Weather Intelligence</h1>
+          </div>
+        </div>
+
+        <div class="topbar-meta">
+          <button class="location-chip" id="location-chip" type="button">Locating...</button>
+          <button class="mode-switch" id="mode-switch" type="button" aria-label="Switch audience mode">
+            <span class="mode-switch-track"></span>
+            <span class="mode-switch-label">Civilian</span>
+            <span class="mode-switch-label">Company</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="info-rail">
+          <section class="panel status-hero">
+            <div class="panel-head">
+              <p class="section-label">Storm Status</p>
+              <div class="panel-actions">
+                <span class="mono-meta" id="status-updated">waiting for feed</span>
+                <button class="ghost-button" id="open-model-modal" type="button">Model scale</button>
+              </div>
+            </div>
+            <div class="severity-row">
+              <div class="severity-pill" id="storm-pill">G0</div>
+              <div class="severity-meta">
+                <p class="eyebrow" id="status-eyebrow">Current global conditions</p>
+                <h2 id="storm-title">Loading live solar conditions...</h2>
+              </div>
+            </div>
+            <p class="hero-summary" id="storm-summary">Connecting to NOAA and NASA feeds.</p>
+            <div class="status-grid">
+              <div class="metric-card">
+                <span class="metric-label">Model</span>
+                <strong id="globe-model">quiet</strong>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Current Kp</span>
+                <strong id="current-kp">--</strong>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Bz</span>
+                <strong id="bz-value">--</strong>
+              </div>
+              <div class="metric-card company-only">
+                <span class="metric-label">Wind</span>
+                <strong id="wind-speed">--</strong>
+              </div>
+            </div>
+            <div class="model-ladder" id="model-ladder"></div>
+            <div class="forecast-visual" id="forecast-visual"></div>
+          </section>
+
+          <section class="panel brief-panel">
+            <div class="panel-head">
+              <p class="section-label">Civilian Brief</p>
+              <span class="mono-meta" id="briefing-source">auto</span>
+            </div>
+            <h3 id="briefing-headline">Loading briefing...</h3>
+            <p class="brief-summary" id="briefing-summary">We are preparing a short, plain-language explanation.</p>
+            <ul class="brief-points" id="briefing-points"></ul>
+            <div class="brief-actions">
+              <div>
+                <p class="mini-label">What to do</p>
+                <p class="mini-copy" id="impact-copy">Stand by while the briefing loads.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel visibility-panel civilian-only">
+            <div class="panel-head">
+              <p class="section-label">Local Visibility</p>
+              <span class="mono-meta" id="probability-meta">next 24-72 hours</span>
+            </div>
+            <div class="visibility-layout">
+              <div class="probability-ring" id="probability-ring">
+                <span class="probability-value" id="probability-value">--%</span>
+                <span class="probability-copy">chance</span>
+              </div>
+              <div class="visibility-copy">
+                <h3 id="visibility-message">Waiting for local forecast.</h3>
+                <p id="look-window">Best viewing window appears after local conditions load.</p>
+              </div>
+            </div>
+            <div class="detail-list">
+              <div class="detail-row">
+                <span>Cloud cover</span>
+                <strong id="cloud-cover">--%</strong>
+              </div>
+              <div class="detail-row">
+                <span>Viewline latitude</span>
+                <strong id="viewline-lat">--</strong>
+              </div>
+            </div>
+            <p class="mini-copy" id="sky-copy">Live local sky guidance will appear here.</p>
+          </section>
+
+          <section class="panel replay-panel">
+            <div class="panel-head">
+              <p class="section-label">Replay And Analysis</p>
+              <span class="mono-meta" id="analysis-note">Live forecast by default.</span>
+            </div>
+            <div class="analysis-controls">
+              <label class="date-control">
+                <span>Date</span>
+                <input id="analysis-date" type="date" />
+              </label>
+              <button class="secondary-button" id="analysis-live" type="button">Live now</button>
+            </div>
+            <div class="detail-list">
+              <div class="detail-row">
+                <span>Analysis</span>
+                <strong id="map-analysis-label">Live now</strong>
+              </div>
+              <div class="detail-row">
+                <span>Forecast window</span>
+                <strong>24-72 hours</strong>
+              </div>
+            </div>
+            <button class="secondary-button full-width" id="load-replay" type="button">Replay May 2024</button>
+            <div class="replay-list" id="replay-list">
+              <p class="empty-copy">Load the replay to compare forecasts across the May 2024 storm.</p>
+            </div>
+          </section>
+
+          <section class="panel company-panel company-only">
+            <div class="panel-head">
+              <p class="section-label">Operational View</p>
+              <span class="mono-meta" id="event-source">NOAA 1-minute Kp</span>
+            </div>
+            <div class="status-grid company-grid">
+              <div class="metric-card">
+                <span class="metric-label">Bt</span>
+                <strong id="bt-value">--</strong>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">G-scale</span>
+                <strong id="g-scale">--</strong>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Infra level</span>
+                <strong id="infra-level">QUIET</strong>
+              </div>
+            </div>
+            <div class="risk-list" id="risk-list"></div>
+            <p class="mini-copy" id="company-copy">Waiting for live event data.</p>
+          </section>
+
+          <section class="panel action-panel civilian-only">
+            <div class="panel-head">
+              <p class="section-label">Alerts</p>
+              <span class="mono-meta">sms</span>
+            </div>
+            <button class="primary-button full-width" id="open-alert-modal" type="button">Notify Me When It's Visible</button>
+          </section>
+        </aside>
+
+        <section class="globe-stage">
+          <div class="globe-copy">
+            <p class="globe-kicker">Live planetary view</p>
+            <h2 id="hero-city">Basking Ridge, NJ</h2>
+            <p id="hero-subcopy">Global storm context with your location pinned on the globe.</p>
+          </div>
+
+          <div class="globe-shell" id="globe-shell">
+            <canvas id="globe-canvas" aria-label="3D Earth globe"></canvas>
+            <div class="globe-overlay">
+              <div class="scene-chip scene-chip-left">
+                <span class="scene-chip-label">Severity</span>
+                <strong id="globe-severity">Quiet Conditions</strong>
+              </div>
+              <div class="scene-chip scene-chip-right">
+                <span class="scene-chip-label">Location</span>
+                <strong id="map-location-label">Basking Ridge, NJ</strong>
+              </div>
+              <div class="scene-footer">
+                <div>
+                  <p class="section-label">Next Solar Wave</p>
+                  <strong id="countdown">No impact expected</strong>
+                </div>
+                <p class="mini-copy" id="countdown-copy">When NASA predicts the next CME impact, the timer appears here.</p>
+              </div>
+            </div>
+          </div>
+
+          <footer class="heartbeat-bar">
+            <div>
+              <p class="section-label">Bz Heartbeat</p>
+              <strong id="heartbeat-copy">Waiting for solar wind feed.</strong>
+            </div>
+            <svg class="heartbeat-graph" viewBox="0 0 1200 120" preserveAspectRatio="none" aria-hidden="true">
+              <path id="heartbeat-path" d=""></path>
+            </svg>
+          </footer>
+
+          <section class="event-strip">
+            <div class="event-strip-copy">
+              <p class="section-label">Active Alert</p>
+              <h3 id="event-headline">No active NOAA alert loaded.</h3>
+              <p class="mini-copy" id="event-timing">Waiting for live status.</p>
+            </div>
+            <div class="event-impact-list" id="event-impact-list">
+              <div class="event-impact-card">
+                <strong>No impact detail yet</strong>
+                <span>Alert details will appear here when available.</span>
+              </div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="modal" id="alert-modal">
+      <form class="modal-card" id="alert-form" method="dialog">
+        <div class="panel-head">
+          <p class="section-label">Aurora Alerts</p>
+          <button class="secondary-button" id="close-alert-modal" type="button">Close</button>
+        </div>
+        <label class="field">
+          <span>Phone number</span>
+          <input id="alert-phone" name="phone" placeholder="5551234567" required />
+        </label>
+        <label class="field">
+          <span>Kp threshold</span>
+          <input id="alert-threshold" name="threshold" type="range" min="1" max="9" value="6" />
+          <span class="range-value" id="threshold-value">6</span>
+        </label>
+        <button class="primary-button full-width" type="submit">Save Alert</button>
+        <p class="mini-copy" id="alert-message"></p>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="model-modal">
+      <div class="modal-card model-modal-card">
+        <div class="panel-head">
+          <div>
+            <p class="section-label">Model Forecast Scale</p>
+            <h3 class="modal-title" id="model-modal-title">Loading model detail...</h3>
+          </div>
+          <button class="secondary-button" id="close-model-modal" type="button">Close</button>
+        </div>
+        <p class="brief-summary" id="model-modal-summary">Waiting for the current forecast.</p>
+        <div class="model-modal-grid">
+          <div>
+            <p class="mini-label">Severity ladder</p>
+            <div class="model-scale-list" id="model-scale-list"></div>
+          </div>
+          <div>
+            <p class="mini-label">Signal orbit</p>
+            <div class="model-orbit" id="model-orbit"></div>
+            <p class="mini-label">Class confidence</p>
+            <div class="model-bars" id="model-bars"></div>
+          </div>
+        </div>
+        <div>
+          <p class="mini-label">Top factors</p>
+          <div class="factor-chips" id="model-factor-chips"></div>
+        </div>
+      </div>
+    </dialog>
+
+    <script type="module" src="./main.js?v=14"></script>
+  </body>
+</html>

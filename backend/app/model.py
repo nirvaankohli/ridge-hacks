@@ -30,6 +30,12 @@ class ModelPredictionRequest(BaseModel):
 
 class ModelPredictionResponse(BaseModel):
     prediction: str
+    prediction_label: str
+    prediction_summary: str
+    severity_rank: int
+    severity_scale: list[dict[str, str | int]]
+    prediction_chart: list[dict[str, str | float | bool]]
+    prediction_orbit: list[dict[str, str | float | bool]]
     confidence: float
     probabilities: dict[str, float]
     features_used: dict[str, float]
@@ -50,6 +56,7 @@ class ReplayPredictionItem(BaseModel):
     date: str
     latitude: float
     prediction: str
+    prediction_label: str
     confidence: float
     probabilities: dict[str, float]
     explanation: str
@@ -157,6 +164,7 @@ class SolarStormModelWrapper:
                     date=str(date_value),
                     latitude=latitude,
                     prediction=result.prediction,
+                    prediction_label=result.prediction_label,
                     confidence=result.confidence,
                     probabilities=result.probabilities,
                     explanation=result.explanation,
@@ -236,8 +244,15 @@ class SolarStormModelWrapper:
         confidence = max(probabilities.values()) if probabilities else 0.0
         top_factors = self._get_top_factors(feature_map)
         explanation = self._build_explanation(prediction, top_factors)
+        severity_meta = _get_severity_meta(prediction)
         return ModelPredictionResponse(
             prediction=prediction,
+            prediction_label=severity_meta["label"],
+            prediction_summary=severity_meta["summary"],
+            severity_rank=severity_meta["rank"],
+            severity_scale=_build_severity_scale(),
+            prediction_chart=_build_prediction_chart(probabilities, prediction),
+            prediction_orbit=_build_prediction_orbit(probabilities, prediction),
             confidence=float(confidence),
             probabilities=probabilities,
             features_used=feature_map,
@@ -337,3 +352,111 @@ def _safe_float(value: Any) -> float | None:
 def _safe_mean(values: list[float]) -> float:
     filtered = [value for value in values if value is not None]
     return float(sum(filtered) / len(filtered)) if filtered else 0.0
+
+
+def _build_severity_scale() -> list[dict[str, str | int]]:
+    return [_get_severity_meta(key) for key in ("quiet", "watch", "moderate", "high", "severe")]
+
+
+def _get_severity_meta(level: str) -> dict[str, str | int]:
+    key = (level or "quiet").lower()
+    meta = {
+        "quiet": {
+            "key": "quiet",
+            "label": "Quiet",
+            "summary": "Low storm risk. Most people will not notice visible effects.",
+            "rank": 0,
+            "tone": "calm",
+        },
+        "watch": {
+            "key": "watch",
+            "label": "Watch",
+            "summary": "Worth monitoring. Conditions are starting to build.",
+            "rank": 1,
+            "tone": "watch",
+        },
+        "moderate": {
+            "key": "moderate",
+            "label": "Moderate",
+            "summary": "Some visible effects are possible, especially at favorable latitudes.",
+            "rank": 2,
+            "tone": "moderate",
+        },
+        "high": {
+            "key": "high",
+            "label": "High",
+            "summary": "Strong storm conditions are plausible. Aurora visibility and disruptions are more likely.",
+            "rank": 3,
+            "tone": "high",
+        },
+        "severe": {
+            "key": "severe",
+            "label": "Severe",
+            "summary": "Major storm conditions are likely, with broad visible and operational impact potential.",
+            "rank": 4,
+            "tone": "severe",
+        },
+    }
+    return meta.get(key, meta["quiet"])
+
+
+def _build_prediction_chart(
+    probabilities: dict[str, float],
+    prediction: str,
+) -> list[dict[str, str | float | bool]]:
+    tone_colors = {
+        "quiet": "#7be6be",
+        "watch": "#48b8ff",
+        "moderate": "#f3ab58",
+        "high": "#ff8f6b",
+        "severe": "#f05a63",
+    }
+    return [
+        {
+            "key": str(item["key"]),
+            "label": str(item["label"]),
+            "value": float(probabilities.get(str(item["key"]), 0.0)),
+            "color": tone_colors.get(str(item["key"]), "#48b8ff"),
+            "active": str(item["key"]) == prediction,
+        }
+        for item in _build_severity_scale()
+    ]
+
+
+def _build_prediction_orbit(
+    probabilities: dict[str, float],
+    prediction: str,
+) -> list[dict[str, str | float | bool]]:
+    orbit_angles = {
+        "quiet": -110.0,
+        "watch": -40.0,
+        "moderate": 20.0,
+        "high": 85.0,
+        "severe": 150.0,
+    }
+    orbit_radii = {
+        "quiet": 0.38,
+        "watch": 0.5,
+        "moderate": 0.62,
+        "high": 0.74,
+        "severe": 0.86,
+    }
+    tone_colors = {
+        "quiet": "#7be6be",
+        "watch": "#48b8ff",
+        "moderate": "#f3ab58",
+        "high": "#ff8f6b",
+        "severe": "#f05a63",
+    }
+    return [
+        {
+            "key": str(item["key"]),
+            "label": str(item["label"]),
+            "value": float(probabilities.get(str(item["key"]), 0.0)),
+            "angle": orbit_angles.get(str(item["key"]), 0.0),
+            "radius": orbit_radii.get(str(item["key"]), 0.5),
+            "color": tone_colors.get(str(item["key"]), "#48b8ff"),
+            "active": str(item["key"]) == prediction,
+        }
+        for item in _build_severity_scale()
+    ]
