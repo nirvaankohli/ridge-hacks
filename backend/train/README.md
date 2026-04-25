@@ -4,6 +4,10 @@
 
 This folder trains a supervised solar-storm risk model from NASA DONKI data.
 
+Current model:
+
+- `XGBoost` multiclass classifier
+
 
 
 Data used:

@@ -6,18 +6,6 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
-def predict_risk(**kwargs):
-    
-    model_path = Path.cwd() / "train" / "artifacts" / "solar_storm_risk_model.joblib"
-
-    args = argparse.Namespace(**kwargs)
-
-    payload = joblib.load()
-
-    model = payload["model"]
-
-    features = payload["feature_columns"]
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Predict local solar storm risk.")
@@ -39,6 +27,7 @@ def main() -> None:
     payload = joblib.load(Path(args.artifact))
     model = payload["model"]
     features = payload["feature_columns"]
+    label_encoder = payload["label_encoder"]
 
     frame = pd.DataFrame(
         [
@@ -60,10 +49,13 @@ def main() -> None:
         ]
     )
 
-    prediction = model.predict(frame[features])[0]
+    prediction_encoded = model.predict(frame[features])[0]
+    prediction = label_encoder.inverse_transform([prediction_encoded])[0]
     probabilities = model.predict_proba(frame[features])[0]
+
     print(f"prediction={prediction}")
-    for label, probability in zip(model.classes_, probabilities, strict=True):
+    for encoded_label, probability in zip(model.classes_, probabilities, strict=True):
+        label = label_encoder.inverse_transform([encoded_label])[0]
         print(f"{label}={probability:.4f}")
 
 

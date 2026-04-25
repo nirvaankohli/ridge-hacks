@@ -5,20 +5,20 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from xgboost import XGBClassifier
 
 
 LATITUDE_BANDS = [35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0]
+DEBUG = True
 
-Debug = True
 
-def print_if_debug(message: str, debug: bool) -> None:
-    
-    if debug:
-
+def print_if_debug(message: str) -> None:
+    if DEBUG:
         print(message)
+
 
 @dataclass(slots=True)
 class TrainingResult:
@@ -62,13 +62,12 @@ def expand_rows_by_latitude(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def train_risk_model(dataset: pd.DataFrame, artifact_dir: Path) -> TrainingResult:
-
-    print_if_debug(f"training model on dataset with {len(dataset)} rows", Debug)
+    print_if_debug(f"training model on dataset with {len(dataset)} rows")
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
     expanded = expand_rows_by_latitude(dataset).dropna()
 
-    print_if_debug(f"expanded dataset to {len(expanded)} rows after latitude expansion", Debug)
+    print_if_debug(f"expanded dataset to {len(expanded)} rows after latitude expansion")
 
     feature_columns = [
         "latitude",
@@ -89,8 +88,6 @@ def train_risk_model(dataset: pd.DataFrame, artifact_dir: Path) -> TrainingResul
     X = expanded[feature_columns]
     y = expanded["risk_label"]
 
-    print_if_debug("split dataset into features and target", Debug)
-
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
@@ -99,35 +96,38 @@ def train_risk_model(dataset: pd.DataFrame, artifact_dir: Path) -> TrainingResul
         stratify=y,
     )
 
-    model = RandomForestClassifier(
-        n_estimators=250,
-        max_depth=10,
-        min_samples_leaf=2,
-        class_weight="balanced_subsample",
+    label_encoder = LabelEncoder()
+    y_train_encoded = label_encoder.fit_transform(y_train)
+
+    model = XGBClassifier(
+        n_estimators=300,
+        max_depth=6,
+        learning_rate=0.05,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        objective="multi:softprob",
+        eval_metric="mlogloss",
         random_state=42,
-        
     )
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train_encoded)
 
-    print_if_debug("trained model, now gonna make predictions", Debug)
-
-    predictions = model.predict(X_test)
+    prediction_encoded = model.predict(X_test)
+    predictions = label_encoder.inverse_transform(prediction_encoded)
     report = classification_report(y_test, predictions, output_dict=False)
-
-    print_if_debug("generated classification report, now gonna persist model and metrics", Debug)
 
     artifact_path = artifact_dir / "solar_storm_risk_model.joblib"
     metrics_path = artifact_dir / "solar_storm_risk_metrics.txt"
 
-    print_if_debug(f"artifact path is {artifact_path}", Debug)
-
     joblib.dump(
-        {"model": model, "feature_columns": feature_columns, "labels": sorted(y.unique())},
+        {
+            "model": model,
+            "feature_columns": feature_columns,
+            "labels": sorted(y.unique()),
+            "label_encoder": label_encoder,
+        },
         artifact_path,
     )
     metrics_path.write_text(report, encoding="utf-8")
-
-    print_if_debug(f"metrics path is {metrics_path}", Debug)
 
     return TrainingResult(
         artifact_path=artifact_path,

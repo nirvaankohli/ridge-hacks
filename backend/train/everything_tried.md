@@ -1,6 +1,6 @@
 # Everything Tried
 
-Things we tried to improve the 5-class solar storm model, but that did not solve the accuracy problem well enough:
+Things we(I) tried to improve the 5-class solar storm model, but that did not solve the accuracy problem well enough:
 
 - Oversampled minority classes after the train split.
 - Widened the `moderate` and `high` label bands.
