@@ -348,6 +348,100 @@ class SpaceWeatherApi:
             "twilio_enabled": self.twilio.is_configured(),
         }
 
+    async def build_health(self) -> dict[str, Any]:
+        now = datetime.now(UTC).isoformat()
+        return {
+            "status": "ok",
+            "scheduler_running": False,
+            "sources": {
+                "nasa_configured": bool(self.nasa.api_key),
+                "weather_enabled": bool(self.weather.api_key),
+                "twilio_enabled": self.twilio.is_configured(),
+            },
+            "checked_at": now,
+        }
+
+    async def build_status(self) -> dict[str, Any]:
+        solar_wind = await self.noaa.get_solar_wind_snapshot()
+        kp = await self.noaa.get_kp_snapshot()
+        scales = await self.noaa.get_scale_snapshot()
+        alerts = await self.noaa.get_alerts()
+        next_cme = await self.nasa.get_next_cme_impact()
+        countdown_seconds = _countdown_seconds(next_cme.estimated_shock_arrival_time) if next_cme else None
+
+        return {
+            "kp": kp.kp,
+            "kp_source": kp.source,
+            "bz": solar_wind.bz_gsm,
+            "bt": solar_wind.bt,
+            "wind_speed": solar_wind.wind_speed,
+            "g_scale": scales.g_scale,
+            "storm_severity": _get_storm_severity(kp.kp, solar_wind.bz_gsm),
+            "alerts": alerts,
+            "cme_impact": next_cme.estimated_shock_arrival_time if next_cme else None,
+            "cme_countdown_seconds": countdown_seconds,
+            "last_updated": _latest_time_tag(solar_wind.time_tag, kp.observed_time),
+            "stale": False,
+        }
+
+    async def build_aurora(self) -> dict[str, Any]:
+        kp = await self.noaa.get_kp_snapshot()
+        aurora = await self.noaa.get_aurora_snapshot()
+        current_kp = kp.kp or 0.0
+        return {
+            "kp": current_kp,
+            "viewline_latitude": _get_viewline_latitude(current_kp),
+            "aurora": {
+                "forecast_time": aurora.forecast_time,
+                "coordinates": aurora.coordinates,
+                "point_count": len(aurora.coordinates),
+            },
+            "last_updated": aurora.forecast_time or kp.observed_time,
+            "stale": False,
+        }
+
+    async def build_visibility(self, lat: float, lon: float) -> dict[str, Any]:
+        kp = await self.noaa.get_kp_snapshot()
+        current_kp = kp.kp or 0.0
+        kp_required = _get_kp_required_for_latitude(lat)
+        probability = _get_visibility_probability(current_kp, lat)
+
+        cloud_cover_percent = None
+        adjusted_probability = probability
+        if self.weather.api_key:
+            try:
+                forecast = await self.weather.fetch_forecast(lat, lon)
+                cloud_cover_percent = _extract_cloud_cover_percent(forecast)
+                if cloud_cover_percent is not None:
+                    adjusted_probability = _adjust_for_cloud_cover(probability, cloud_cover_percent)
+            except Exception:
+                cloud_cover_percent = None
+
+        final_probability = adjusted_probability if adjusted_probability is not None else probability
+        return {
+            "latitude": lat,
+            "longitude": lon,
+            "current_kp": current_kp,
+            "kp_required": round(kp_required, 2),
+            "probability": probability,
+            "viewline_latitude": _get_viewline_latitude(current_kp),
+            "cloud_cover_percent": cloud_cover_percent,
+            "adjusted_probability": adjusted_probability,
+            "message": _build_visibility_message(final_probability),
+        }
+
+    async def build_infrastructure(self) -> dict[str, Any]:
+        kp = await self.noaa.get_kp_snapshot()
+        scales = await self.noaa.get_scale_snapshot()
+        current_kp = kp.kp or 0.0
+        return {
+            "current_kp": current_kp,
+            "current_g_scale": scales.g_scale,
+            "region_risks": _get_all_region_risks(current_kp),
+            "gps_band_start_lat": max(0.0, _get_viewline_latitude(current_kp) + 5.0),
+            "recommended_warning_level": _get_storm_severity(current_kp, None)["level"],
+        }
+
 
 def _safe_float(value: Any) -> float | None:
     try:
@@ -358,3 +452,116 @@ def _safe_float(value: Any) -> float | None:
 
 def _safe_value(row: list[Any], index: int) -> Any:
     return row[index] if len(row) > index else None
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_time_tag(*values: str | None) -> str | None:
+    timestamps: list[datetime] = []
+    for value in values:
+        if not value:
+            continue
+        try:
+            timestamps.append(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError:
+            continue
+    if not timestamps:
+        return None
+    return max(timestamps).isoformat()
+
+
+def _countdown_seconds(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        target = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0, int((target - datetime.now(UTC)).total_seconds()))
+
+
+def _get_storm_severity(kp: float | None, bz: float | None) -> dict[str, str]:
+    kp = kp or 0.0
+    if kp >= 8 or (bz is not None and bz < -15):
+        return {"level": "SEVERE", "color": "#CC0000", "label": "G4-G5 Major Storm"}
+    if kp >= 6 or (bz is not None and bz < -10):
+        return {"level": "MODERATE", "color": "#E87722", "label": "G2-G3 Storm"}
+    if kp >= 5 or (bz is not None and bz < -5):
+        return {"level": "MINOR", "color": "#E8C422", "label": "G1 Minor Storm"}
+    return {"level": "QUIET", "color": "#2E8B57", "label": "Quiet Conditions"}
+
+
+def _get_viewline_latitude(kp: float) -> float:
+    return max(40.0, 67.0 - kp * 2.5)
+
+
+def _get_kp_required_for_latitude(latitude: float) -> float:
+    return (90.0 - abs(latitude)) / 7.5
+
+
+def _get_visibility_probability(current_kp: float, latitude: float) -> int:
+    kp_required = _get_kp_required_for_latitude(latitude)
+    probability = min(100.0, max(0.0, ((current_kp - kp_required) / 3.0) * 100.0))
+    return round(probability)
+
+
+def _adjust_for_cloud_cover(probability: int, cloud_cover: int) -> int:
+    if cloud_cover <= 20:
+        return probability
+    if cloud_cover <= 50:
+        return round(probability * 0.8)
+    if cloud_cover <= 80:
+        return round(probability * 0.5)
+    return round(probability * 0.2)
+
+
+def _extract_cloud_cover_percent(forecast: dict[str, Any]) -> int | None:
+    items = forecast.get("list") or []
+    if not items:
+        return None
+    clouds = items[0].get("clouds") or {}
+    return _safe_int(clouds.get("all"))
+
+
+def _build_visibility_message(probability: int) -> str:
+    if probability >= 70:
+        return "Strong chance if skies stay clear."
+    if probability >= 35:
+        return "Possible under dark, clear skies."
+    return "Aurora unlikely from this location right now."
+
+
+def _get_all_region_risks(kp: float) -> list[dict[str, Any]]:
+    regions = [
+        ("NPCC", "Northeast Power Coordinating Council", 5.0),
+        ("RFC", "ReliabilityFirst", 5.0),
+        ("SERC", "SERC Reliability", 6.0),
+        ("MRO", "Midwest Reliability Organization", 5.0),
+        ("WECC", "Western Electricity Coordinating Council", 5.0),
+        ("TRE", "Texas Reliability Entity", 7.0),
+    ]
+    return [
+        {
+            "region_id": region_id,
+            "name": name,
+            "threshold": threshold,
+            "threat_level": _get_region_threat_level(kp, threshold)["level"],
+            "color": _get_region_threat_level(kp, threshold)["color"],
+        }
+        for region_id, name, threshold in regions
+    ]
+
+
+def _get_region_threat_level(kp: float, threshold: float) -> dict[str, str]:
+    if kp < threshold:
+        return {"level": "none", "color": "#2E8B57"}
+    if kp < threshold + 1:
+        return {"level": "minor", "color": "#E8C422"}
+    if kp < threshold + 2:
+        return {"level": "moderate", "color": "#E87722"}
+    return {"level": "severe", "color": "#CC0000"}
