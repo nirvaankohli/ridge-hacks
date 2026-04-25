@@ -56,19 +56,19 @@
             <p class="hero-summary" id="storm-summary">Connecting to NOAA and NASA feeds.</p>
             <div class="status-grid">
               <div class="metric-card">
-                <span class="metric-label">Model</span>
+                <span class="metric-label" id="model-metric-label">Model</span>
                 <strong id="globe-model">quiet</strong>
               </div>
               <div class="metric-card">
-                <span class="metric-label">Current Kp</span>
+                <span class="metric-label" id="current-kp-label">Current Kp</span>
                 <strong id="current-kp">--</strong>
               </div>
               <div class="metric-card">
-                <span class="metric-label">Bz</span>
+                <span class="metric-label" id="bz-label">Bz</span>
                 <strong id="bz-value">--</strong>
               </div>
               <div class="metric-card company-only">
-                <span class="metric-label">Wind</span>
+                <span class="metric-label" id="wind-label">Wind</span>
                 <strong id="wind-speed">--</strong>
               </div>
             </div>
@@ -130,6 +130,10 @@
                 <span>Date</span>
                 <input id="analysis-date" type="date" />
               </label>
+              <label class="date-control">
+                <span>Latitude</span>
+                <input id="analysis-latitude" type="number" min="-90" max="90" step="0.1" />
+              </label>
               <button class="secondary-button" id="analysis-live" type="button">Live now</button>
             </div>
             <div class="detail-list">
@@ -155,20 +159,21 @@
             </div>
             <div class="status-grid company-grid">
               <div class="metric-card">
-                <span class="metric-label">Bt</span>
+                <span class="metric-label" id="bt-label">Bt</span>
                 <strong id="bt-value">--</strong>
               </div>
               <div class="metric-card">
-                <span class="metric-label">G-scale</span>
+                <span class="metric-label" id="g-scale-label">G-scale</span>
                 <strong id="g-scale">--</strong>
               </div>
               <div class="metric-card">
-                <span class="metric-label">Infra level</span>
+                <span class="metric-label" id="infra-level-label">Infra level</span>
                 <strong id="infra-level">QUIET</strong>
               </div>
             </div>
             <div class="risk-list" id="risk-list"></div>
             <p class="mini-copy" id="company-copy">Waiting for live event data.</p>
+            <div class="company-actions" id="company-actions"></div>
           </section>
 
           <section class="panel action-panel civilian-only">

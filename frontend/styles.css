@@ -574,7 +574,7 @@ body[data-mode="company"] .mode-switch-track {
 
 .analysis-controls {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr 1fr auto;
   gap: 0.7rem;
 }
 
@@ -607,6 +607,31 @@ body[data-mode="company"] .mode-switch-track {
   flex-direction: column;
   gap: 0.6rem;
   margin-top: 0.9rem;
+}
+
+.company-actions {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+}
+
+.company-action-card {
+  padding: 0.86rem 0.92rem;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(240, 90, 99, 0.08), rgba(255, 255, 255, 0.035));
+  border: 1px solid rgba(240, 90, 99, 0.16);
+}
+
+.company-action-card strong {
+  display: block;
+  color: #ffd6da;
+}
+
+.company-action-card span {
+  display: block;
+  margin-top: 0.18rem;
+  color: rgba(236, 242, 252, 0.82);
+  line-height: 1.45;
 }
 
 .replay-item p,

@@ -35,9 +35,13 @@ const els = {
   stormSummary: document.getElementById("storm-summary"),
   modelLadder: document.getElementById("model-ladder"),
   forecastVisual: document.getElementById("forecast-visual"),
+  modelMetricLabel: document.getElementById("model-metric-label"),
   globeModel: document.getElementById("globe-model"),
+  currentKpLabel: document.getElementById("current-kp-label"),
   currentKp: document.getElementById("current-kp"),
+  bzLabel: document.getElementById("bz-label"),
   bzValue: document.getElementById("bz-value"),
+  windLabel: document.getElementById("wind-label"),
   windSpeed: document.getElementById("wind-speed"),
   briefingSource: document.getElementById("briefing-source"),
   briefingHeadline: document.getElementById("briefing-headline"),
@@ -53,17 +57,22 @@ const els = {
   viewlineLat: document.getElementById("viewline-lat"),
   skyCopy: document.getElementById("sky-copy"),
   analysisDate: document.getElementById("analysis-date"),
+  analysisLatitude: document.getElementById("analysis-latitude"),
   analysisLive: document.getElementById("analysis-live"),
   analysisNote: document.getElementById("analysis-note"),
   mapAnalysisLabel: document.getElementById("map-analysis-label"),
   loadReplay: document.getElementById("load-replay"),
   replayList: document.getElementById("replay-list"),
   eventSource: document.getElementById("event-source"),
+  btLabel: document.getElementById("bt-label"),
   btValue: document.getElementById("bt-value"),
+  gScaleLabel: document.getElementById("g-scale-label"),
   gScale: document.getElementById("g-scale"),
+  infraLevelLabel: document.getElementById("infra-level-label"),
   infraLevel: document.getElementById("infra-level"),
   riskList: document.getElementById("risk-list"),
   companyCopy: document.getElementById("company-copy"),
+  companyActions: document.getElementById("company-actions"),
   openAlertModal: document.getElementById("open-alert-modal"),
   alertModal: document.getElementById("alert-modal"),
   closeAlertModal: document.getElementById("close-alert-modal"),
@@ -260,7 +269,48 @@ function applyLocation(location) {
   els.heroCity.textContent = location.city;
   els.locationChip.textContent = `Location: ${location.city}`;
   els.mapLocationLabel.textContent = location.city;
+  if (!els.analysisLatitude.value) {
+    els.analysisLatitude.value = Number(location.lat).toFixed(1);
+  }
   globe.setLocation(location.lat, location.lon);
+}
+
+function getSelectedLatitude() {
+  const raw = Number(els.analysisLatitude.value);
+  if (Number.isFinite(raw)) {
+    return Math.max(-90, Math.min(90, raw));
+  }
+  return state.location.lat;
+}
+
+function isHistoricalMode() {
+  return !isToday(state.analysisDate);
+}
+
+function buildHistoricalVisibility(model, latitude) {
+  const probs = model?.probabilities || {};
+  const stormScore =
+    (Number(probs.severe || 0) * 1.0) +
+    (Number(probs.high || 0) * 0.8) +
+    (Number(probs.moderate || 0) * 0.55) +
+    (Number(probs.watch || 0) * 0.25);
+  const latitudeAdvantage = Math.max(0, Math.min(1, (Math.abs(latitude) - 30) / 35));
+  const probability = Math.min(100, Math.round(((stormScore * 0.72) + (latitudeAdvantage * 0.28)) * 100));
+  const viewlineLatitude = Math.max(44, Math.min(69, 69 - stormScore * 24));
+  return {
+    adjusted_probability: probability,
+    probability,
+    kp_required: Math.max(1, 9 - Math.abs(latitude) / 10),
+    viewline_latitude: viewlineLatitude,
+    message: probability >= 70
+      ? "Historical replay suggests strong aurora visibility potential."
+      : probability >= 35
+        ? "Historical replay suggests a watchable but uncertain aurora setup."
+        : "Historical replay keeps the visible aurora zone mostly north of this latitude.",
+    look_window: `Replay mode for ${prettyDate(state.analysisDate)} at ${latitude.toFixed(1)}° latitude.`,
+    sky_copy: "This card is using the model's historical forecast rather than live conditions.",
+    cloud_cover_label: "Historical",
+  };
 }
 
 async function fetchForecastModel(latitude) {
@@ -301,6 +351,38 @@ function renderRiskList(regions) {
       <span class="risk-level ${region.threat_level}">${region.threat_level}</span>
     `;
     els.riskList.append(row);
+  }
+}
+
+function renderCompanyActions(level, historical) {
+  els.companyActions.innerHTML = "";
+  if (historical || String(level || "").toUpperCase() !== "SEVERE") {
+    return;
+  }
+
+  const actions = [
+    {
+      title: "Grid posture",
+      body: "Reduce maintenance exposure, review transformer loading, and prepare operators for induced current anomalies.",
+    },
+    {
+      title: "Satellite and GPS",
+      body: "Move sensitive operations to contingency plans and notify positioning-dependent teams about degraded accuracy risk.",
+    },
+    {
+      title: "Communications",
+      body: "Prepare backup HF and timing paths, and brief teams on possible radio disruption windows.",
+    },
+  ];
+
+  for (const action of actions) {
+    const card = document.createElement("div");
+    card.className = "company-action-card";
+    card.innerHTML = `
+      <strong>${action.title}</strong>
+      <span>${action.body}</span>
+    `;
+    els.companyActions.append(card);
   }
 }
 
@@ -509,6 +591,23 @@ function renderForecastVisual(model) {
 }
 
 function renderEventStrip(status) {
+  if (isHistoricalMode()) {
+    const latitude = getSelectedLatitude();
+    const model = state.model || {};
+    els.eventHeadline.textContent = `${model.prediction_label || severityLabel(model.prediction)} replay`;
+    els.eventTiming.textContent = `${prettyDate(state.analysisDate)} · ${latitude.toFixed(1)}° latitude · ${model.forecast_window || "next 24-72 hours"}`;
+    els.eventImpactList.innerHTML = "";
+    for (const factor of (model.top_factors || []).slice(0, 3)) {
+      const card = document.createElement("div");
+      card.className = "event-impact-card";
+      card.innerHTML = `
+        <strong>${factor.feature}</strong>
+        <span>${Number(factor.value).toFixed(1)} contributed to this replayed forecast.</span>
+      `;
+      els.eventImpactList.append(card);
+    }
+    return;
+  }
   const alert = status?.primary_alert;
   els.eventHeadline.textContent = alert?.summary || "No active NOAA alert right now.";
   els.eventTiming.textContent = formatAlertTiming(alert);
@@ -582,22 +681,28 @@ function updateHeartbeat(status) {
 
 function updateUI() {
   const status = state.status || {};
-  const visibility = state.visibility || {};
+  const selectedLatitude = getSelectedLatitude();
+  const historical = isHistoricalMode();
+  const visibility = historical ? buildHistoricalVisibility(state.model, selectedLatitude) : (state.visibility || {});
   const model = state.model || {};
   const briefing = state.briefing || {};
   const infrastructure = state.infrastructure || {};
   const level = model.prediction || status.storm_severity?.level || "quiet";
 
   els.statusUpdated.textContent = formatLocalDate(status.last_updated);
-  els.statusEyebrow.textContent = isToday(state.analysisDate) ? "Current global conditions" : `Historical forecast for ${prettyDate(state.analysisDate)}`;
-  els.stormPill.textContent = status.g_scale || status.storm_severity?.level || "G0";
+  els.statusEyebrow.textContent = historical ? `Historical forecast for ${prettyDate(state.analysisDate)} at ${selectedLatitude.toFixed(1)}° latitude` : "Current global conditions";
+  els.stormPill.textContent = historical ? severityLabel(level).toUpperCase() : (status.g_scale || status.storm_severity?.level || "G0");
   els.stormPill.className = `severity-pill ${severityClass(level)}`;
-  els.stormTitle.textContent = `${severityLabel(level)} conditions`;
-  els.stormSummary.textContent = buildStatusSummary(status, model);
+  els.stormTitle.textContent = historical ? `${severityLabel(level)} forecast` : `${severityLabel(level)} conditions`;
+  els.stormSummary.textContent = historical ? (model.prediction_summary || model.explanation || plainEnglish(level)) : buildStatusSummary(status, model);
+  els.modelMetricLabel.textContent = historical ? "Forecast" : "Model";
+  els.currentKpLabel.textContent = historical ? "Latitude" : "Current Kp";
+  els.bzLabel.textContent = historical ? "Window" : "Bz";
+  els.windLabel.textContent = historical ? "Mode" : "Wind";
   els.globeModel.textContent = `${severityLabel(model.prediction)} · ${formatPercent((model.confidence || 0) * 100)}`;
-  els.currentKp.textContent = safeNumber(status.kp, 1);
-  els.bzValue.textContent = `${safeNumber(status.bz, 1)} nT`;
-  els.windSpeed.textContent = `${safeNumber(status.wind_speed)} km/s`;
+  els.currentKp.textContent = historical ? `${selectedLatitude.toFixed(1)}°` : safeNumber(status.kp, 1);
+  els.bzValue.textContent = historical ? (model.forecast_window || "24-72h") : `${safeNumber(status.bz, 1)} nT`;
+  els.windSpeed.textContent = historical ? "Historical" : `${safeNumber(status.wind_speed)} km/s`;
 
   els.briefingSource.textContent = briefing.source || "auto";
   els.briefingHeadline.textContent = briefing.headline || "Loading briefing...";
@@ -624,43 +729,67 @@ function updateUI() {
 
   els.analysisNote.textContent = isToday(state.analysisDate)
     ? "Live forecast by default."
-    : `Historical analysis for ${prettyDate(state.analysisDate)}.`;
-  els.mapAnalysisLabel.textContent = isToday(state.analysisDate) ? "Live now" : prettyDate(state.analysisDate);
+    : `Historical analysis for ${prettyDate(state.analysisDate)} at ${selectedLatitude.toFixed(1)}° latitude.`;
+  els.mapAnalysisLabel.textContent = isToday(state.analysisDate) ? "Live now" : `${prettyDate(state.analysisDate)} · ${selectedLatitude.toFixed(1)}°`;
 
-  els.eventSource.textContent = status.kp_source || "NOAA 1-minute Kp";
-  els.btValue.textContent = `${safeNumber(status.bt, 1)} nT`;
-  els.gScale.textContent = status.g_scale || "--";
-  els.infraLevel.textContent = infrastructure.recommended_warning_level || "QUIET";
-  els.companyCopy.textContent = infrastructure.summary || "Waiting for live event data.";
-  renderRiskList(infrastructure.region_risks);
+  els.eventSource.textContent = historical ? "Historical model replay" : (status.kp_source || "NOAA 1-minute Kp");
+  els.btLabel.textContent = historical ? "Date" : "Bt";
+  els.gScaleLabel.textContent = historical ? "Severity" : "G-scale";
+  els.infraLevelLabel.textContent = historical ? "Posture" : "Infra level";
+  els.btValue.textContent = historical ? prettyDate(state.analysisDate) : `${safeNumber(status.bt, 1)} nT`;
+  els.gScale.textContent = historical ? severityLabel(level) : (status.g_scale || "G0");
+  els.infraLevel.textContent = historical ? severityLabel(level).toUpperCase() : (infrastructure.recommended_warning_level || "QUIET");
+  els.companyCopy.textContent = historical
+    ? `Historical replay at ${selectedLatitude.toFixed(1)}° latitude using the trained forecast model.`
+    : (infrastructure.summary || "Waiting for live event data.");
+  renderRiskList(historical ? [] : infrastructure.region_risks);
+  renderCompanyActions(infrastructure.recommended_warning_level, historical);
 
-  els.globeSeverity.textContent = status.storm_severity?.label || `${severityLabel(level)} Conditions`;
-  els.countdown.textContent = formatCountdown(status.cme_countdown_seconds);
-  els.countdownCopy.textContent = status.countdown_copy || "When NASA predicts the next CME impact, the timer appears here.";
+  els.globeSeverity.textContent = historical ? `${severityLabel(level)} Forecast` : (status.storm_severity?.label || `${severityLabel(level)} Conditions`);
+  els.countdown.textContent = historical ? prettyDate(state.analysisDate) : formatCountdown(status.cme_countdown_seconds);
+  els.countdownCopy.textContent = historical
+    ? `Replay latitude ${selectedLatitude.toFixed(1)}°. This view is using the model's historical forecast window.`
+    : (status.countdown_copy || "When NASA predicts the next CME impact, the timer appears here.");
+
+  if (historical) {
+    els.heroCity.textContent = "Historical Replay";
+    els.heroSubcopy.textContent = `${prettyDate(state.analysisDate)} forecast at ${selectedLatitude.toFixed(1)}° latitude.`;
+    els.locationChip.textContent = `Replay latitude: ${selectedLatitude.toFixed(1)}°`;
+    els.mapLocationLabel.textContent = `${selectedLatitude.toFixed(1)}° latitude`;
+  } else {
+    els.heroCity.textContent = state.location.city;
+    els.heroSubcopy.textContent =
+      state.mode === "company"
+        ? "Operational context on the left, live globe on the right."
+        : "Global storm context with your location pinned on the globe.";
+    els.locationChip.textContent = `Location: ${state.location.city}`;
+    els.mapLocationLabel.textContent = state.location.city;
+  }
 
   renderModelLadder(model);
   renderModelModal(model);
   renderForecastVisual(model);
   renderEventStrip(status);
   updateHeartbeat(status);
-  globe.setSeverity(level, status.kp || 0, status.bz || 0);
-  globe.setLocation(state.location.lat, state.location.lon);
-  globe.setAuroraBand(visibility.viewline_latitude || 67, status.kp || 0);
+  globe.setSeverity(level, historical ? 0 : (status.kp || 0), historical ? 0 : (status.bz || 0));
+  globe.setLocation(historical ? selectedLatitude : state.location.lat, state.location.lon);
+  globe.setAuroraBand(visibility.viewline_latitude || 67, historical ? 0 : (status.kp || 0));
 }
 
 async function refreshData() {
   const { lat, lon } = state.location;
-  logDebug("refresh start", { lat, lon, analysisDate: state.analysisDate });
+  const selectedLatitude = getSelectedLatitude();
+  logDebug("refresh start", { lat, lon, analysisDate: state.analysisDate, selectedLatitude });
   const [status, visibility, infrastructure, model] = await Promise.all([
     fetchJson("/api/status"),
     fetchJson(`/api/visibility?lat=${lat}&lon=${lon}`),
     fetchJson("/api/infrastructure"),
-    fetchForecastModel(lat),
+    fetchForecastModel(selectedLatitude),
   ]);
 
   let briefing = null;
   try {
-    briefing = await fetchCivilianBrief(lat, lon);
+    briefing = await fetchCivilianBrief(selectedLatitude, lon);
   } catch (error) {
     logError("briefing fetch failed", error);
   }
@@ -674,7 +803,7 @@ async function refreshData() {
 }
 
 async function loadReplay() {
-  const replay = await fetchJson(`/model/replay?start_date=2024-05-09&end_date=2024-05-12&latitude=${state.location.lat}`);
+  const replay = await fetchJson(`/model/replay?start_date=2024-05-09&end_date=2024-05-12&latitude=${getSelectedLatitude()}`);
   state.replay = replay.items || [];
   renderReplay(state.replay);
 }
@@ -911,6 +1040,7 @@ function latLonToVector(lat, lon, radius) {
 async function init() {
   setMode(state.mode);
   els.analysisDate.value = state.analysisDate;
+  els.analysisLatitude.value = Number(state.location.lat).toFixed(1);
   els.thresholdValue.textContent = els.alertThreshold.value;
   els.mapAnalysisLabel.textContent = "Live now";
   setConnectionState(false, "Checking backend connection...");
@@ -952,6 +1082,11 @@ els.locationChip.addEventListener("click", async () => {
 els.analysisDate.addEventListener("change", async () => {
   state.analysisDate = els.analysisDate.value || todayIsoDate();
   await refreshData().catch((error) => logError("analysis refresh failed", error));
+});
+
+els.analysisLatitude.addEventListener("change", async () => {
+  els.analysisLatitude.value = Number(getSelectedLatitude()).toFixed(1);
+  await refreshData().catch((error) => logError("analysis latitude refresh failed", error));
 });
 
 els.analysisLive.addEventListener("click", async () => {
