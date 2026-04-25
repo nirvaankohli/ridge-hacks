@@ -30,8 +30,12 @@ class ModelPredictionRequest(BaseModel):
 
 class ModelPredictionResponse(BaseModel):
     prediction: str
+    confidence: float
     probabilities: dict[str, float]
     features_used: dict[str, float]
+    top_factors: list[dict[str, str | float]]
+    explanation: str
+    forecast_window: str = "next 24-72 hours"
     source: str = Field(description="Whether the prediction came from a dataset date row or raw request data.")
 
 
@@ -40,6 +44,15 @@ class LoadedModel:
     model: Any
     feature_columns: list[str]
     label_encoder: Any
+
+
+class ReplayPredictionItem(BaseModel):
+    date: str
+    latitude: float
+    prediction: str
+    confidence: float
+    probabilities: dict[str, float]
+    explanation: str
 
 
 class SolarStormModelWrapper:
@@ -68,12 +81,7 @@ class SolarStormModelWrapper:
             label = loaded.label_encoder.inverse_transform([encoded_label])[0]
             probabilities[label] = float(probability)
 
-        return ModelPredictionResponse(
-            prediction=prediction,
-            probabilities=probabilities,
-            features_used=feature_map,
-            source=source,
-        )
+        return self._build_response(prediction, probabilities, feature_map, source)
 
     async def predict_current(self, latitude: float = 45.0) -> ModelPredictionResponse:
         today = datetime.now(UTC).date()
@@ -132,6 +140,29 @@ class SolarStormModelWrapper:
         result = self.predict(request)
         result.source = "live_space_weather"
         return result
+
+    def predict_range(self, start_date: str, end_date: str, latitude: float = 45.0) -> list[ReplayPredictionItem]:
+        dataset_path = self._resolve_path(self.dataset_path)
+        if not dataset_path.exists():
+            return []
+
+        dataset = pd.read_csv(dataset_path)
+        matched = dataset[(dataset["date"] >= start_date) & (dataset["date"] <= end_date)].sort_values("date")
+
+        items: list[ReplayPredictionItem] = []
+        for date_value in matched["date"].tolist():
+            result = self.predict(ModelPredictionRequest(date=str(date_value), latitude=latitude))
+            items.append(
+                ReplayPredictionItem(
+                    date=str(date_value),
+                    latitude=latitude,
+                    prediction=result.prediction,
+                    confidence=result.confidence,
+                    probabilities=result.probabilities,
+                    explanation=result.explanation,
+                )
+            )
+        return items
 
     async def _safe_fetch(self, fetcher, *args: Any) -> list[dict[str, Any]]:
         try:
@@ -194,6 +225,59 @@ class SolarStormModelWrapper:
         row.pop("date", None)
         row.pop("target_kp", None)
         return {key: float(value) for key, value in row.items()}
+
+    def _build_response(
+        self,
+        prediction: str,
+        probabilities: dict[str, float],
+        feature_map: dict[str, float],
+        source: str,
+    ) -> ModelPredictionResponse:
+        confidence = max(probabilities.values()) if probabilities else 0.0
+        top_factors = self._get_top_factors(feature_map)
+        explanation = self._build_explanation(prediction, top_factors)
+        return ModelPredictionResponse(
+            prediction=prediction,
+            confidence=float(confidence),
+            probabilities=probabilities,
+            features_used=feature_map,
+            top_factors=top_factors,
+            explanation=explanation,
+            source=source,
+        )
+
+    def _get_top_factors(self, feature_map: dict[str, float]) -> list[dict[str, str | float]]:
+        factor_labels = {
+            "earth_directed_cme_count_72h": "Earth-directed CME count",
+            "max_cme_speed_72h": "Max CME speed",
+            "impact_count_24h": "Predicted impact count",
+            "x_flare_count_72h": "X-class flare count",
+            "m_flare_count_72h": "M-class flare count",
+            "flare_count_24h": "Recent flare count",
+            "prior_day_max_kp": "Previous day Kp",
+            "prior_3day_mean_kp": "3-day Kp average",
+            "cme_count_24h": "Recent CME count",
+        }
+        ranked_keys = sorted(
+            factor_labels,
+            key=lambda key: abs(feature_map.get(key, 0.0)),
+            reverse=True,
+        )
+        factors: list[dict[str, str | float]] = []
+        for key in ranked_keys:
+            value = float(feature_map.get(key, 0.0))
+            if value <= 0:
+                continue
+            factors.append({"feature": factor_labels[key], "value": value, "key": key})
+            if len(factors) == 3:
+                break
+        return factors
+
+    def _build_explanation(self, prediction: str, top_factors: list[dict[str, str | float]]) -> str:
+        if not top_factors:
+            return f"The model sees {prediction} risk for the next 24-72 hours with limited storm-driving signals."
+        factor_text = ", ".join(str(item["feature"]) for item in top_factors[:3])
+        return f"The model predicts {prediction} risk in the next 24-72 hours mainly because of {factor_text}."
 
     def _resolve_path(self, path: Path) -> Path:
         if path.exists():
