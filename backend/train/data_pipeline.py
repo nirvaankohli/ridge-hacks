@@ -46,10 +46,6 @@ class HistoricalDatasetBuilder:
         rows: list[dict[str, Any]] = []
         current = start
         while current <= end:
-            if current.isoformat() not in daily_kp:
-                current += timedelta(days=1)
-                continue
-
             rows.append(
                 {
                     "date": current.isoformat(),
@@ -57,7 +53,7 @@ class HistoricalDatasetBuilder:
                     **self._aggregate_flare_features(flare_frame, current),
                     "prior_day_max_kp": daily_kp.get((current - timedelta(days=1)).isoformat(), 0.0),
                     "prior_3day_mean_kp": self._mean_prior_kp(daily_kp, current, window_days=3),
-                    "target_kp": daily_kp[current.isoformat()],
+                    "target_kp": daily_kp.get(current.isoformat(), 0.0),
                 }
             )
             current += timedelta(days=1)

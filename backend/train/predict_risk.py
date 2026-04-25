@@ -6,10 +6,22 @@ from pathlib import Path
 import joblib
 import pandas as pd
 
+def predict_risk(**kwargs):
+    
+    model_path = Path.cwd() / "train" / "artifacts" / "solar_storm_risk_model.joblib"
+
+    args = argparse.Namespace(**kwargs)
+
+    payload = joblib.load()
+
+    model = payload["model"]
+
+    features = payload["feature_columns"]
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Predict local solar storm risk.")
-    parser.add_argument("--artifact", default="backend/train/artifacts/solar_storm_risk_model.joblib")
+    parser.add_argument("--artifact", default=Path.cwd() / "train" / "artifacts" / "solar_storm_risk_model.joblib")
     parser.add_argument("--latitude", type=float, required=True)
     parser.add_argument("--cme-count-24h", type=float, default=0.0)
     parser.add_argument("--earth-directed-cme-count-72h", type=float, default=0.0)
