@@ -4,7 +4,7 @@
 For judges:
 
 - This just serves as a simple API client layer to fetch and aggregate data from various NASA API and NOAA endpoints!
-- 
+- Pretty redundant code, but it's clean and works well for our needs. We can easily swap out the data sources or add new ones as needed.
 
 """
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -23,17 +24,23 @@ def load_env_value(key: str, env_path: str = "backend/.env") -> str | None:
     if value:
         return value
 
-    if not os.path.exists(env_path):
-        return None
+    candidate_paths = [
+        Path(env_path),
+        Path(".env"),
+        Path(__file__).resolve().parents[1] / ".env",
+    ]
 
-    with open(env_path, "r", encoding="utf-8") as env_file:
-        for line in env_file:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            env_key, env_value = line.split("=", 1)
-            if env_key.strip() == key:
-                return env_value.strip()
+    for candidate in candidate_paths:
+        if not candidate.exists():
+            continue
+        with open(candidate, "r", encoding="utf-8") as env_file:
+            for line in env_file:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                env_key, env_value = line.split("=", 1)
+                if env_key.strip() == key:
+                    return env_value.strip()
     return None
 
 
@@ -90,7 +97,7 @@ class FlareSnapshot:
 
 
 class BaseApiClient:
-    def __init__(self, timeout: float = 20.0) -> None:
+    def __init__(self, timeout: float = 60.0) -> None:
         self._timeout = timeout
 
     async def _get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
