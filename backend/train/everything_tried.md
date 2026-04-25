@@ -18,4 +18,4 @@ Main result:
 
 - `class_weight="balanced",`
 - increasing `quiet` samples
-- `class_weight="balanced",` --> 
+- `class_weight="balanced",` --> `class_weight="balanced_subsample`

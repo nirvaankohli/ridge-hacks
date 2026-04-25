@@ -105,6 +105,7 @@ def train_risk_model(dataset: pd.DataFrame, artifact_dir: Path) -> TrainingResul
         min_samples_leaf=2,
         class_weight="balanced_subsample",
         random_state=42,
+        
     )
     model.fit(X_train, y_train)
 
