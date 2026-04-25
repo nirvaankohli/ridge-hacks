@@ -10,6 +10,7 @@ For judges:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+from app.core.cache import SpaceWeatherCache, space_weather_cache
+from app.core.scheduler import is_scheduler_running
 
 
 def load_env_value(key: str, env_path: str = "backend/.env") -> str | None:
@@ -316,93 +320,103 @@ class SpaceWeatherApi:
         noaa: NoaaClient | None = None,
         weather: OpenWeatherClient | None = None,
         twilio: TwilioClient | None = None,
+        cache: SpaceWeatherCache | None = None,
     ) -> None:
         self.nasa = nasa or NasaDonkiClient()
         self.noaa = noaa or NoaaClient()
         self.weather = weather or OpenWeatherClient()
         self.twilio = twilio or TwilioClient()
+        self.cache = cache or space_weather_cache
 
     async def build_summary(self) -> dict[str, Any]:
-        solar_wind = await self.noaa.get_solar_wind_snapshot()
-        kp = await self.noaa.get_kp_snapshot()
-        scales = await self.noaa.get_scale_snapshot()
-        alerts = await self.noaa.get_alerts()
-        aurora = await self.noaa.get_aurora_snapshot()
-        next_cme = await self.nasa.get_next_cme_impact()
-        recent_gst = await self.nasa.get_recent_gst()
-        recent_flares = await self.nasa.get_recent_flares()
+        snapshot = await self._ensure_snapshot()
+        realtime = snapshot.get("realtime", {})
+        aurora = snapshot.get("aurora", {})
+        donki = snapshot.get("donki", {})
 
         return {
-            "solar_wind": asdict(solar_wind),
-            "kp": asdict(kp),
-            "scales": asdict(scales),
-            "alerts": alerts,
-            "aurora": {
-                "forecast_time": aurora.forecast_time,
-                "point_count": len(aurora.coordinates),
+            "solar_wind": {
+                "time_tag": realtime.get("solar_wind_time_tag"),
+                "bz_gsm": realtime.get("bz"),
+                "bt": realtime.get("bt"),
+                "wind_speed": realtime.get("wind_speed"),
             },
-            "next_cme_impact": asdict(next_cme) if next_cme else None,
-            "recent_gst": [asdict(item) for item in recent_gst[:5]],
-            "recent_flares": [asdict(item) for item in recent_flares[:5]],
+            "kp": {
+                "kp": realtime.get("kp"),
+                "observed_time": realtime.get("kp_observed_time"),
+                "source": realtime.get("kp_source", "NOAA 1-minute Kp"),
+            },
+            "scales": {"g_scale": realtime.get("g_scale"), "raw": realtime.get("scales_raw", {})},
+            "alerts": realtime.get("alerts", []),
+            "aurora": {
+                "forecast_time": aurora.get("forecast_time"),
+                "point_count": len(aurora.get("coordinates", [])),
+            },
+            "next_cme_impact": donki.get("next_cme_impact"),
+            "recent_gst": donki.get("recent_gst", [])[:5],
+            "recent_flares": donki.get("recent_flares", [])[:5],
             "weather_enabled": bool(self.weather.api_key),
             "twilio_enabled": self.twilio.is_configured(),
         }
 
     async def build_health(self) -> dict[str, Any]:
-        now = datetime.now(UTC).isoformat()
+        snapshot = await self._ensure_snapshot()
         return {
             "status": "ok",
-            "scheduler_running": False,
+            "scheduler_running": is_scheduler_running(),
             "sources": {
                 "nasa_configured": bool(self.nasa.api_key),
                 "weather_enabled": bool(self.weather.api_key),
                 "twilio_enabled": self.twilio.is_configured(),
             },
-            "checked_at": now,
+            "source_freshness": _build_source_freshness(snapshot),
+            "source_errors": snapshot.get("source_errors", {}),
+            "checked_at": datetime.now(UTC).isoformat(),
         }
 
     async def build_status(self) -> dict[str, Any]:
-        solar_wind = await self.noaa.get_solar_wind_snapshot()
-        kp = await self.noaa.get_kp_snapshot()
-        scales = await self.noaa.get_scale_snapshot()
-        alerts = await self.noaa.get_alerts()
-        next_cme = await self.nasa.get_next_cme_impact()
-        countdown_seconds = _countdown_seconds(next_cme.estimated_shock_arrival_time) if next_cme else None
+        snapshot = await self._ensure_snapshot()
+        realtime = snapshot.get("realtime", {})
+        donki = snapshot.get("donki", {})
+        cme_impact = (donki.get("next_cme_impact") or {}).get("estimated_shock_arrival_time")
 
         return {
-            "kp": kp.kp,
-            "kp_source": kp.source,
-            "bz": solar_wind.bz_gsm,
-            "bt": solar_wind.bt,
-            "wind_speed": solar_wind.wind_speed,
-            "g_scale": scales.g_scale,
-            "storm_severity": _get_storm_severity(kp.kp, solar_wind.bz_gsm),
-            "alerts": alerts,
-            "cme_impact": next_cme.estimated_shock_arrival_time if next_cme else None,
-            "cme_countdown_seconds": countdown_seconds,
-            "last_updated": _latest_time_tag(solar_wind.time_tag, kp.observed_time),
-            "stale": False,
+            "kp": realtime.get("kp"),
+            "kp_source": realtime.get("kp_source", "NOAA 1-minute Kp"),
+            "bz": realtime.get("bz"),
+            "bt": realtime.get("bt"),
+            "wind_speed": realtime.get("wind_speed"),
+            "g_scale": realtime.get("g_scale"),
+            "storm_severity": _get_storm_severity(realtime.get("kp"), realtime.get("bz")),
+            "alerts": realtime.get("alerts", []),
+            "cme_impact": cme_impact,
+            "cme_countdown_seconds": _countdown_seconds(cme_impact),
+            "last_updated": snapshot.get("last_updated"),
+            "stale": _is_stale(snapshot.get("source_timestamps", {}).get("realtime"), 10),
+            "source_errors": snapshot.get("source_errors", {}),
         }
 
     async def build_aurora(self) -> dict[str, Any]:
-        kp = await self.noaa.get_kp_snapshot()
-        aurora = await self.noaa.get_aurora_snapshot()
-        current_kp = kp.kp or 0.0
+        snapshot = await self._ensure_snapshot()
+        realtime = snapshot.get("realtime", {})
+        aurora = snapshot.get("aurora", {})
+        current_kp = realtime.get("kp") or 0.0
         return {
             "kp": current_kp,
             "viewline_latitude": _get_viewline_latitude(current_kp),
             "aurora": {
-                "forecast_time": aurora.forecast_time,
-                "coordinates": aurora.coordinates,
-                "point_count": len(aurora.coordinates),
+                "forecast_time": aurora.get("forecast_time"),
+                "coordinates": aurora.get("coordinates", []),
+                "point_count": len(aurora.get("coordinates", [])),
             },
-            "last_updated": aurora.forecast_time or kp.observed_time,
-            "stale": False,
+            "last_updated": aurora.get("forecast_time") or snapshot.get("last_updated"),
+            "stale": _is_stale(snapshot.get("source_timestamps", {}).get("aurora"), 15),
+            "source_errors": snapshot.get("source_errors", {}),
         }
 
     async def build_visibility(self, lat: float, lon: float) -> dict[str, Any]:
-        kp = await self.noaa.get_kp_snapshot()
-        current_kp = kp.kp or 0.0
+        snapshot = await self._ensure_snapshot()
+        current_kp = snapshot.get("realtime", {}).get("kp") or 0.0
         kp_required = _get_kp_required_for_latitude(lat)
         probability = _get_visibility_probability(current_kp, lat)
 
@@ -431,16 +445,136 @@ class SpaceWeatherApi:
         }
 
     async def build_infrastructure(self) -> dict[str, Any]:
-        kp = await self.noaa.get_kp_snapshot()
-        scales = await self.noaa.get_scale_snapshot()
-        current_kp = kp.kp or 0.0
+        snapshot = await self._ensure_snapshot()
+        realtime = snapshot.get("realtime", {})
+        current_kp = realtime.get("kp") or 0.0
         return {
             "current_kp": current_kp,
-            "current_g_scale": scales.g_scale,
+            "current_g_scale": realtime.get("g_scale"),
             "region_risks": _get_all_region_risks(current_kp),
             "gps_band_start_lat": max(0.0, _get_viewline_latitude(current_kp) + 5.0),
             "recommended_warning_level": _get_storm_severity(current_kp, None)["level"],
+            "stale": _is_stale(snapshot.get("source_timestamps", {}).get("realtime"), 10),
+            "source_errors": snapshot.get("source_errors", {}),
         }
+
+    async def warm_cache(self) -> None:
+        await asyncio.gather(
+            self.poll_realtime_space_weather(),
+            self.poll_aurora_feed(),
+            self.poll_donki_data(),
+        )
+
+    async def poll_realtime_space_weather(self) -> None:
+        solar_wind_task = self.noaa.get_solar_wind_snapshot()
+        kp_task = self.noaa.get_kp_snapshot()
+        scales_task = self.noaa.get_scale_snapshot()
+        alerts_task = self.noaa.get_alerts()
+        solar_wind, kp, scales, alerts = await asyncio.gather(
+            solar_wind_task,
+            kp_task,
+            scales_task,
+            alerts_task,
+            return_exceptions=True,
+        )
+
+        previous = (await self.cache.get_snapshot()).get("realtime", {})
+        payload = dict(previous)
+
+        if isinstance(solar_wind, Exception):
+            await self.cache.mark_error("solar_wind", str(solar_wind))
+        else:
+            payload.update(
+                {
+                    "solar_wind_time_tag": solar_wind.time_tag,
+                    "bz": solar_wind.bz_gsm,
+                    "bt": solar_wind.bt,
+                    "wind_speed": solar_wind.wind_speed,
+                }
+            )
+            await self.cache.clear_error("solar_wind")
+
+        if isinstance(kp, Exception):
+            await self.cache.mark_error("kp", str(kp))
+        else:
+            payload.update(
+                {
+                    "kp": kp.kp,
+                    "kp_observed_time": kp.observed_time,
+                    "kp_source": kp.source,
+                }
+            )
+            await self.cache.clear_error("kp")
+
+        if isinstance(scales, Exception):
+            await self.cache.mark_error("scales", str(scales))
+        else:
+            payload.update({"g_scale": scales.g_scale, "scales_raw": scales.raw})
+            await self.cache.clear_error("scales")
+
+        if isinstance(alerts, Exception):
+            await self.cache.mark_error("alerts", str(alerts))
+        else:
+            payload["alerts"] = alerts
+            await self.cache.clear_error("alerts")
+
+        await self.cache.update_realtime(payload)
+
+    async def poll_aurora_feed(self) -> None:
+        previous = (await self.cache.get_snapshot()).get("aurora", {})
+        try:
+            aurora = await self.noaa.get_aurora_snapshot()
+            await self.cache.update_aurora(
+                {
+                    **previous,
+                    "forecast_time": aurora.forecast_time,
+                    "coordinates": aurora.coordinates,
+                }
+            )
+            await self.cache.clear_error("aurora")
+        except Exception as exc:
+            await self.cache.mark_error("aurora", str(exc))
+
+    async def poll_donki_data(self) -> None:
+        next_cme_task = self.nasa.get_next_cme_impact()
+        recent_gst_task = self.nasa.get_recent_gst()
+        recent_flares_task = self.nasa.get_recent_flares()
+        next_cme, recent_gst, recent_flares = await asyncio.gather(
+            next_cme_task,
+            recent_gst_task,
+            recent_flares_task,
+            return_exceptions=True,
+        )
+
+        previous = (await self.cache.get_snapshot()).get("donki", {})
+        payload = dict(previous)
+
+        if isinstance(next_cme, Exception):
+            await self.cache.mark_error("donki_cme", str(next_cme))
+        else:
+            payload["next_cme_impact"] = asdict(next_cme) if next_cme else None
+            await self.cache.clear_error("donki_cme")
+
+        if isinstance(recent_gst, Exception):
+            await self.cache.mark_error("donki_gst", str(recent_gst))
+        else:
+            payload["recent_gst"] = [asdict(item) for item in recent_gst[:5]]
+            await self.cache.clear_error("donki_gst")
+
+        if isinstance(recent_flares, Exception):
+            await self.cache.mark_error("donki_flares", str(recent_flares))
+        else:
+            payload["recent_flares"] = [asdict(item) for item in recent_flares[:5]]
+            await self.cache.clear_error("donki_flares")
+
+        await self.cache.update_donki(payload)
+
+    async def _ensure_snapshot(self) -> dict[str, Any]:
+        snapshot = await self.cache.get_snapshot()
+        if snapshot.get("last_updated"):
+            return snapshot
+        await self.warm_cache()
+        return await self.cache.get_snapshot()
 
 
 def _safe_float(value: Any) -> float | None:
@@ -483,6 +617,16 @@ def _countdown_seconds(value: str | None) -> int | None:
     except ValueError:
         return None
     return max(0, int((target - datetime.now(UTC)).total_seconds()))
+
+
+def _is_stale(value: str | None, max_age_minutes: int) -> bool:
+    if not value:
+        return True
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return (datetime.now(UTC) - timestamp) > timedelta(minutes=max_age_minutes)
 
 
 def _get_storm_severity(kp: float | None, bz: float | None) -> dict[str, str]:
@@ -565,3 +709,14 @@ def _get_region_threat_level(kp: float, threshold: float) -> dict[str, str]:
     if kp < threshold + 2:
         return {"level": "moderate", "color": "#E87722"}
     return {"level": "severe", "color": "#CC0000"}
+
+
+def _build_source_freshness(snapshot: dict[str, Any]) -> dict[str, Any]:
+    source_timestamps = snapshot.get("source_timestamps", {})
+    return {
+        source: {
+            "last_updated": timestamp,
+            "stale": _is_stale(timestamp, 15 if source == "aurora" else 20),
+        }
+        for source, timestamp in source_timestamps.items()
+    }
