@@ -7,6 +7,7 @@ This folder trains a supervised solar-storm risk model from NASA DONKI data.
 Current model:
 
 - `XGBoost` multiclass classifier
+- Target is forecast-style: strongest geomagnetic storm class in the next 24 to 72 hours
 
 
 

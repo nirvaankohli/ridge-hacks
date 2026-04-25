@@ -53,7 +53,7 @@ class HistoricalDatasetBuilder:
                     **self._aggregate_flare_features(flare_frame, current),
                     "prior_day_max_kp": daily_kp.get((current - timedelta(days=1)).isoformat(), 0.0),
                     "prior_3day_mean_kp": self._mean_prior_kp(daily_kp, current, window_days=3),
-                    "target_kp": daily_kp.get(current.isoformat(), 0.0),
+                    "target_kp": self._max_future_kp(daily_kp, current, start_offset=1, end_offset=3),
                 }
             )
             current += timedelta(days=1)
@@ -227,6 +227,19 @@ class HistoricalDatasetBuilder:
             for offset in range(1, window_days + 1)
         ]
         return float(sum(values) / len(values)) if values else 0.0
+
+    def _max_future_kp(
+        self,
+        daily_kp: dict[str, float],
+        current_day: date,
+        start_offset: int,
+        end_offset: int,
+    ) -> float:
+        values = [
+            daily_kp.get((current_day + timedelta(days=offset)).isoformat(), 0.0)
+            for offset in range(start_offset, end_offset + 1)
+        ]
+        return float(max(values)) if values else 0.0
 
 
 def _to_datetime(value: str | None) -> datetime | None:
