@@ -36,3 +36,9 @@ Predict:
 ```powershell
 .\.venv\Scripts\python.exe -m train.predict_risk --latitude 45 --earth-directed-cme-count-72h 2 --max-cme-speed-72h 1400 --impact-count-24h 1 --x-flare-count-72h 1 --prior-day-max-kp 5
 ```
+
+Time-based evaluation:
+
+```powershell
+.\.venv\Scripts\python.exe -m train.evaluate_time_split
+```

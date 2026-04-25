@@ -9,6 +9,7 @@ Things we(I) tried to improve the 5-class solar storm model, but that did not so
 - Switched from raw class argmax to probability-based category mapping.
 - Tightened and retuned the 5-class label boundaries multiple times.
 - SMOTE
+- XGBOOSt
 
 Main result:
 
